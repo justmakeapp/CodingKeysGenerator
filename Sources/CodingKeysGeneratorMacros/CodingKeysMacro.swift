@@ -9,6 +9,20 @@ public struct CodingKeysMacro: MemberMacro {
         providingMembersOf declaration: some DeclGroupSyntax,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
+        guard declaration.is(StructDeclSyntax.self) || declaration.is(ClassDeclSyntax.self) else {
+            let error = Diagnostic(node: node._syntaxNode, message: CodingKeyMacroDiagnostic.isNotClassOrStruct("CodingKeysMacro"))
+            context.diagnose(error)
+            return []
+        }
+        let currentModifiers: [String] = declaration.modifiers.compactMap { ($0 as? DeclModifierSyntax)?.name.text }
+        let accessModifier = Set(AccessModifier.allCases.map(\.rawValue)).intersection(currentModifiers)
+        let codingKeyModifier = {
+            if let firstModifier = accessModifier.first {
+                return "\(firstModifier) "
+            }
+            return ""
+        }()
+
         let cases: [String] = try declaration.memberBlock.members.compactMap { member in
             guard let variableDecl = member.decl.as(VariableDeclSyntax.self) else { return nil }
             guard let property = variableDecl.bindings.first?.pattern.as(IdentifierPatternSyntax.self)?.identifier.text
@@ -25,16 +39,15 @@ public struct CodingKeysMacro: MemberMacro {
                 return "case \(property) = \(customKeyName)"
             } else {
                 let raw = property.dropBackticks()
-                let snakeCase = raw.snakeCased()
-                return raw == snakeCase ? "case \(property)" : "case \(property) = \"\(snakeCase)\""
+                return property.contains("`") ? "case `\(raw)` = \"\(property)\"" : "case \(property)"
             }
         }
         guard !cases.isEmpty else { return [] }
         let casesDecl: DeclSyntax = """
-enum CodingKeys: String, CodingKey {
-    \(raw: cases.joined(separator: "\n    "))
-}
-"""
+        \(raw: codingKeyModifier)enum CodingKeys: String, CodingKey {
+            \(raw: cases.joined(separator: "\n    "))
+        }
+        """
         return [casesDecl]
     }
 
@@ -62,9 +75,9 @@ enum CodingKeys: String, CodingKey {
 
 public struct CustomCodingKeyMacro: PeerMacro {
     public static func expansion(
-        of node: AttributeSyntax,
-        providingPeersOf declaration: some DeclSyntaxProtocol,
-        in context: some MacroExpansionContext
+        of _: AttributeSyntax,
+        providingPeersOf _: some DeclSyntaxProtocol,
+        in _: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
         []
     }
@@ -72,9 +85,9 @@ public struct CustomCodingKeyMacro: PeerMacro {
 
 public struct CodingKeyIgnoredMacro: PeerMacro {
     public static func expansion(
-        of node: AttributeSyntax,
-        providingPeersOf declaration: some DeclSyntaxProtocol,
-        in context: some MacroExpansionContext
+        of _: AttributeSyntax,
+        providingPeersOf _: some DeclSyntaxProtocol,
+        in _: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
         []
     }
@@ -86,12 +99,42 @@ struct CodingKeysDiagnostic: DiagnosticMessage {
     let severity: SwiftDiagnostics.DiagnosticSeverity = .error
 }
 
-extension String {
-    fileprivate func dropBackticks() -> String {
+private extension String {
+    func dropBackticks() -> String {
         count > 1 && first == "`" && last == "`" ? String(dropLast().dropFirst()) : self
     }
+}
 
-    fileprivate func snakeCased() -> String {
-        reduce(into: "") { $0.append(contentsOf: $1.isUppercase ? "_\($1.lowercased())" : "\($1)") }
+enum CodingKeyMacroDiagnostic: Error, DiagnosticMessage {
+    case isNotClassOrStruct(String)
+
+    private var rawValue: String {
+        switch self {
+        case let .isNotClassOrStruct(macro):
+            return "isNotClassOrStruct_\(macro)"
+        }
     }
+
+    // MARK: - DiagnosticMessage
+
+    var severity: DiagnosticSeverity { .error }
+
+    var message: String {
+        switch self {
+        case let .isNotClassOrStruct(macro):
+            return "'@\(macro)' can only be applied to a class or struct."
+        }
+    }
+
+    var diagnosticID: MessageID {
+        .init(domain: "CodingKeysMacro", id: rawValue)
+    }
+}
+
+public enum AccessModifier: String, CaseIterable {
+    case `private`
+    case `public`
+    case package
+    case `internal`
+    case `fileprivate`
 }
